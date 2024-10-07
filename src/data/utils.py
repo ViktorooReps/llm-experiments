@@ -35,10 +35,11 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
         raise NotImplementedError(f"Unknow dataset key '{args.dataset}'")
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data, sequence_length):
+    def __init__(self, data, sequence_length, add_sink: bool = False):
         super().__init__()
         self.data = data
-        self.sequence_length = sequence_length
+        self.sequence_length = sequence_length - add_sink  # if sink is added, it is at the first position
+        self.add_sink = add_sink
 
     def __len__(self):
         total_length = len(self.data)
@@ -50,9 +51,20 @@ class Dataset(torch.utils.data.Dataset):
         seq_length = self.sequence_length
         idx = idx * seq_length
         x = torch.from_numpy((self.data[idx : idx + seq_length]).astype(np.int64))
+        if self.add_sink:
+            x = torch.concatenate([x.new_zeros(1), x], dim=0)
 
         y = torch.from_numpy(
-            (self.data[idx + 1 : idx + 1 + seq_length]).astype(np.int64)
+            # source: <I> <love> <cat> <fish> <.>
+
+            # without sink:
+            # x:    <I>     <love>  <cat>   <fish>
+            # y:    <love>  <cat>   <fish>  <.>
+
+            # with sink:
+            # x:    <s> <I>     <love>  <cat>
+            # y:    <I> <love>  <cat>   <fish>
+            (self.data[idx + 1 - self.add_sink: idx + 1 + seq_length]).astype(np.int64)
         )
         return x, y
 

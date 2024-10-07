@@ -20,7 +20,7 @@ def get_slimpajama_data(num_proc=40):
         split_dataset = dataset["train"].train_test_split(
             test_size=0.0005, seed=2357, shuffle=True
         )
-        split_dataset["val"] = split_dataset.pop("test")
+        split_dataset["val"] = split_dataset.pop("validation")
 
         def process(example):
             ids = tknzr.encode_ordinary(

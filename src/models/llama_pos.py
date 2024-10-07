@@ -33,6 +33,14 @@ class LlamaWithAbsolutePositions(GPTBase):
         self.config = config
         self.tokenizer = tiktoken.get_encoding("gpt2")
 
+        if config.add_sink:
+            self.tokenizer = tiktoken.Encoding(
+                name='gpt2-with-sink',
+                pat_str=self.tokenizer._pat_str,
+                mergeable_ranks=self.tokenizer._mergeable_ranks,
+                special_tokens={'<sink>': 0}
+            )
+
         # create the token and position embeddings
         self.head_dim = config.n_embd // config.n_head
         self.freqs_cis = precompute_freqs_cis(self.head_dim, config.sequence_length)
@@ -82,6 +90,10 @@ class LlamaWithAbsolutePositions(GPTBase):
         assert (
             t <= self.config.sequence_length
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_length}"
+
+        if self.config.add_sink:
+            assert (idx[0] == 0).all(), f"Sequences should start with sink token: <sink> = 0"
+
         # shape (1, t)
         pos = torch.arange(0, t, dtype=torch.long, device=device)
 
