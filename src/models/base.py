@@ -231,9 +231,13 @@ class GPTBase(nn.Module):
                 elif pn.endswith("weight") and isinstance(m, whitelist_weight_modules):
                     # weights of whitelist modules will be weight decayed
                     decay.add(fpn)
+                    print('Decay: ', fpn)
                 elif pn.endswith("weight") and isinstance(m, BLACKLIST_WEIGHT_MODULES):
                     # weights of blacklist modules will NOT be weight decayed
                     no_decay.add(fpn)
+                    print('No Decay: ', fpn)
+                else:
+                    print('Could not attribute: ', fpn)
 
         # subtle: 'transformer.wte.weight' and 'lm_head.weight' are tied, so they
         # will appear in the no_decay and decay sets respectively after the above.
@@ -294,6 +298,6 @@ class GPTBase(nn.Module):
     def generate_from_string(self, in_str, max_new_tokens, temperature=1.0, top_k=None):
         idx = torch.tensor(self.tokenizer.encode(in_str, allowed_special={"<|endoftext|>"})).view(1, -1).to(self.lm_head.weight.device)
         if self.config.add_sink:
-            idx = torch.concatenate([idx.new_zeros(1), idx], dim=1)
+            idx = torch.concatenate([idx.new_zeros(1), idx], dim=-1)
         out_idx = self.generate(idx, max_new_tokens, temperature, top_k).view(-1).to('cpu').numpy()
         return self.tokenizer.decode(out_idx)

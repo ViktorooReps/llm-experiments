@@ -20,7 +20,7 @@ import tiktoken
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from models.base import CausalSelfAttention, GPTBase
+from models.base import GPTBase
 
 from src.models.llama import precompute_freqs_cis, LlamaBlock, RMSNorm
 
