@@ -62,8 +62,8 @@ class Dataset(torch.utils.data.Dataset):
             # y:    <love>  <cat>   <fish>  <.>
 
             # with sink:
-            # x:    <s> <I>     <love>  <cat>
-            # y:    <I> <love>  <cat>   <fish>
+            # x:    <sink>  <I>     <love>  <cat>
+            # y:    <I>     <love>  <cat>   <fish>
             (self.data[idx + 1 - self.add_sink: idx + 1 + seq_length]).astype(np.int64)
         )
         return x, y
