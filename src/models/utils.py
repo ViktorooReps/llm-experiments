@@ -1,5 +1,6 @@
 import torch
 from .llama import Llama, RMSNorm
+from .llama_pos import LlamaWithAbsolutePositions
 from .base import GPTBase, LayerNorm
 
 
@@ -18,6 +19,9 @@ def get_model(args):
         return model
     elif args.model == 'llama2':
         model = Llama(args)
+        return model
+    elif args.model == 'llama2-pos':
+        model = LlamaWithAbsolutePositions(args)
         return model
     else:
         raise KeyError(f"Unknown model '{args.model}'.")
