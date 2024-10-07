@@ -38,7 +38,7 @@ def get_slimpajama_data(num_proc=40):
         # concatenate all the ids in each dataset into one large file we can use for training
         for split, dset in tokenized.items():
             if split == "train":
-                dset = dset.shuffle(seed=2357)
+                dset = dset.shuffle(seed=2357, keep_in_memory=True)
 
             arr_len = np.sum(dset["len"])
             filename = os.path.join(SPJ_DATA_PATH, f"{split}.bin")
