@@ -17,11 +17,6 @@ def get_slimpajama_data(num_proc=40):
         os.makedirs(SPJ_DATA_PATH, exist_ok=True)
         dataset = load_dataset("DKYoon/SlimPajama-6B")
 
-        split_dataset = dataset["train"].train_test_split(
-            test_size=0.0005, seed=2357, shuffle=True
-        )
-        split_dataset["val"] = split_dataset.pop("validation")
-
         def process(example):
             ids = tknzr.encode_ordinary(
                 example["text"]
@@ -33,7 +28,7 @@ def get_slimpajama_data(num_proc=40):
             return out
 
         # tokenize the dataset
-        tokenized = split_dataset.map(
+        tokenized = dataset.map(
             process,
             remove_columns=["text"],
             desc="tokenizing the splits",
@@ -42,6 +37,9 @@ def get_slimpajama_data(num_proc=40):
 
         # concatenate all the ids in each dataset into one large file we can use for training
         for split, dset in tokenized.items():
+            if split == "train":
+                dset = dset.shuffle(seed=2357)
+
             arr_len = np.sum(dset["len"])
             filename = os.path.join(SPJ_DATA_PATH, f"{split}.bin")
             dtype = np.uint16  # (can do since enc.max_token_value == 50256 is < 2**16)
@@ -64,7 +62,7 @@ def get_slimpajama_data(num_proc=40):
         os.path.join(SPJ_DATA_PATH, "train.bin"), dtype=np.uint16, mode="r"
     )
     val_data = np.memmap(
-        os.path.join(SPJ_DATA_PATH, "val.bin"), dtype=np.uint16, mode="r"
+        os.path.join(SPJ_DATA_PATH, "validation.bin"), dtype=np.uint16, mode="r"
     )
 
     return {"train": train_data, "val": val_data}
