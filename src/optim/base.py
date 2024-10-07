@@ -71,6 +71,8 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
 
     
     while itr < iterations:
+
+        sampler_state_before_iter = train_sampler.generator.get_state()
             
         for microstep_idx in range(acc_steps):  # gradient accumulation
             x, y = get_batch(data_train_iter, device=extra_args.device)
