@@ -118,6 +118,16 @@ class GPTBase(nn.Module):
         assert config.sequence_length is not None
         self.config = config
         self.tokenizer = tiktoken.get_encoding("gpt2")
+        self.sink_token = None
+
+        if config.add_sink:
+            self.sink_token = self.tokenizer.n_vocab
+            self.tokenizer = tiktoken.Encoding(
+                name='gpt2-with-sink',
+                pat_str=self.tokenizer._pat_str,
+                mergeable_ranks=self.tokenizer._mergeable_ranks,
+                special_tokens={'<sink>': self.sink_token, **self.tokenizer._special_tokens}
+            )
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -294,6 +304,6 @@ class GPTBase(nn.Module):
     def generate_from_string(self, in_str, max_new_tokens, temperature=1.0, top_k=None):
         idx = torch.tensor(self.tokenizer.encode(in_str, allowed_special={"<|endoftext|>"})).view(1, -1).to(self.lm_head.weight.device)
         if self.config.add_sink:
-            idx = torch.concatenate([idx.new_zeros((1, 1)), idx], dim=-1)
+            idx = torch.concatenate([idx.new_full((1, 1), fill_value=self.sink_token), idx], dim=-1)
         out_idx = self.generate(idx, max_new_tokens, temperature, top_k).view(-1).to('cpu').numpy()
         return self.tokenizer.decode(out_idx)

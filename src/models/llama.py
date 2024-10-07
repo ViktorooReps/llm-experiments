@@ -152,13 +152,15 @@ class Llama(GPTBase):
         assert config.sequence_length is not None
         self.config = config
         self.tokenizer = tiktoken.get_encoding("gpt2")
+        self.sink_token = None
 
         if config.add_sink:
+            self.sink_token = self.tokenizer.n_vocab
             self.tokenizer = tiktoken.Encoding(
                 name='gpt2-with-sink',
                 pat_str=self.tokenizer._pat_str,
                 mergeable_ranks=self.tokenizer._mergeable_ranks,
-                special_tokens={'<sink>': 0, **self.tokenizer._special_tokens}
+                special_tokens={'<sink>': self.sink_token, **self.tokenizer._special_tokens}
             )
 
         vocab_size = self.tokenizer.n_vocab
@@ -213,8 +215,9 @@ class Llama(GPTBase):
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_length}"
 
         if self.config.add_sink:
-            assert (idx[:, 0] == 0).all(), (f"Sequences should start with sink token: <sink> = 0, "
-                                            f"but they start with {idx[:, 0]}")
+            assert (idx[:, 0] == self.sink_token).all(), (f"Sequences should start with sink token: "
+                                                          f"<sink> = {self.sink_token}, "
+                                                          f"but they start with {idx[:, 0]}")
 
         # shape (1, t)
         pos = torch.arange(0, t, dtype=torch.long, device=device)

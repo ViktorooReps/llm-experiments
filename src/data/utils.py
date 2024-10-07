@@ -35,11 +35,12 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
         raise NotImplementedError(f"Unknow dataset key '{args.dataset}'")
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data, sequence_length, add_sink: bool = False):
+    def __init__(self, data, sequence_length, sink_token: int | None = None):
         super().__init__()
         self.data = data
-        self.sequence_length = sequence_length - add_sink  # if sink is added, it is at the first position
-        self.add_sink = add_sink
+        self.sink_token = sink_token
+        self.add_sink = (sink_token is not None)
+        self.sequence_length = sequence_length - self.add_sink  # if sink is added, it is at the first position
 
     def __len__(self):
         total_length = len(self.data)
@@ -52,7 +53,7 @@ class Dataset(torch.utils.data.Dataset):
         idx = idx * seq_length
         x = torch.from_numpy((self.data[idx : idx + seq_length]).astype(np.int64))
         if self.add_sink:
-            x = torch.concatenate([x.new_zeros(1), x], dim=0)
+            x = torch.concatenate([x.new_full(1, fill_value=self.sink_token), x], dim=0)
 
         y = torch.from_numpy(
             # source: <I> <love> <cat> <fish> <.>
@@ -69,7 +70,7 @@ class Dataset(torch.utils.data.Dataset):
         return x, y
 
 
-def get_dataloader(data, sequence_length, batch_size, seed=0, distributed_backend=None, *, add_sink: bool = False):
+def get_dataloader(data, sequence_length, batch_size, seed=0, distributed_backend=None, *, sink_token: int | None = None):
     """Create a DataLoader for the given data. If distributed_backend is provided and is truly
     distributed (world size > 1), the DataLoader will be created with a DistributedSampler that
     splits the data across the processes (in conjunction with DDP).
@@ -77,7 +78,7 @@ def get_dataloader(data, sequence_length, batch_size, seed=0, distributed_backen
 
     Returns both the dataloader and the sampler.
     """
-    dataset = Dataset(data, sequence_length=sequence_length, add_sink=add_sink)
+    dataset = Dataset(data, sequence_length=sequence_length, sink_token=sink_token)
     if distributed_backend and distributed_backend.get_world_size() > 1:
         sampler = torch.utils.data.DistributedSampler(
             dataset,
