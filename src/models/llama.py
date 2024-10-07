@@ -149,7 +149,6 @@ class LlamaBlock(nn.Module):
 class Llama(GPTBase):
     def __init__(self, config):
         super().__init__(config)
-        assert config.vocab_size is not None
         assert config.sequence_length is not None
         self.config = config
         self.tokenizer = tiktoken.get_encoding("gpt2")
@@ -162,20 +161,22 @@ class Llama(GPTBase):
                 special_tokens={'<sink>': 0}
             )
 
+        vocab_size = self.tokenizer.n_vocab
+
         # create the token and position embeddings
         self.head_dim = config.n_embd // config.n_head
         self.freqs_cis = precompute_freqs_cis(self.head_dim, config.sequence_length)
 
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.Embedding(config.vocab_size, config.n_embd),
+                wte=nn.Embedding(vocab_size, config.n_embd),
                 drop=nn.Dropout(config.dropout),
                 h=nn.ModuleList([LlamaBlock(config) for _ in range(config.n_layer)]),
                 ln_f=RMSNorm(config.n_embd, eps=config.rmsnorm_eps),
             )
         )
 
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.n_embd, vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
@@ -212,7 +213,8 @@ class Llama(GPTBase):
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_length}"
 
         if self.config.add_sink:
-            assert (idx[:, 0] == 0).all(), f"Sequences should start with sink token: <sink> = 0"
+            assert (idx[:, 0] == 0).all(), (f"Sequences should start with sink token: <sink> = 0, "
+                                            f"but they start with {idx[:, 0]}")
 
         # shape (1, t)
         pos = torch.arange(0, t, dtype=torch.long, device=device)
