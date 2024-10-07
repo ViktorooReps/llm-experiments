@@ -212,7 +212,7 @@ class Llama(GPTBase):
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_length}"
 
         if self.config.add_sink:
-            assert (idx[0] == 0).all(), f"Sequences should start with sink token: <sink> = 0"
+            assert (idx[:, 0] == 0).all(), f"Sequences should start with sink token: <sink> = 0"
 
         # shape (1, t)
         pos = torch.arange(0, t, dtype=torch.long, device=device)
