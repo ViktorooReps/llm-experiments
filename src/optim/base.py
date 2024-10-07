@@ -25,6 +25,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
         batch_size=batch_size,
         seed=data_seed,
         distributed_backend=distributed_backend,
+        add_sink=extra_args.add_sink,
     )
     
     data["val"], val_sampler = get_dataloader(
@@ -32,6 +33,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
         sequence_length=sequence_length,
         batch_size=batch_size,
         seed=data_seed,
+        add_sink=extra_args.add_sink,
     )
 
     num_substeps_per_epoch = len(data["train"])

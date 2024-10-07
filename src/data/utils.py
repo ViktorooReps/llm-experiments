@@ -69,7 +69,7 @@ class Dataset(torch.utils.data.Dataset):
         return x, y
 
 
-def get_dataloader(data, sequence_length, batch_size, seed=0, distributed_backend=None):
+def get_dataloader(data, sequence_length, batch_size, seed=0, distributed_backend=None, *, add_sink: bool = False):
     """Create a DataLoader for the given data. If distributed_backend is provided and is truly
     distributed (world size > 1), the DataLoader will be created with a DistributedSampler that
     splits the data across the processes (in conjunction with DDP).
@@ -77,7 +77,7 @@ def get_dataloader(data, sequence_length, batch_size, seed=0, distributed_backen
 
     Returns both the dataloader and the sampler.
     """
-    dataset = Dataset(data, sequence_length=sequence_length)
+    dataset = Dataset(data, sequence_length=sequence_length, add_sink=add_sink)
     if distributed_backend and distributed_backend.get_world_size() > 1:
         sampler = torch.utils.data.DistributedSampler(
             dataset,
