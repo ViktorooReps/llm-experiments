@@ -158,7 +158,7 @@ class Llama(GPTBase):
                 name='gpt2-with-sink',
                 pat_str=self.tokenizer._pat_str,
                 mergeable_ranks=self.tokenizer._mergeable_ranks,
-                special_tokens={'<sink>': 0}
+                special_tokens={'<sink>': 0, **self.tokenizer._special_tokens}
             )
 
         vocab_size = self.tokenizer.n_vocab
