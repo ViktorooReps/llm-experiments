@@ -298,6 +298,6 @@ class GPTBase(nn.Module):
     def generate_from_string(self, in_str, max_new_tokens, temperature=1.0, top_k=None):
         idx = torch.tensor(self.tokenizer.encode(in_str, allowed_special={"<|endoftext|>"})).view(1, -1).to(self.lm_head.weight.device)
         if self.config.add_sink:
-            idx = torch.concatenate([idx.new_zeros(1), idx], dim=-1)
+            idx = torch.concatenate([idx.new_zeros((1, 1)), idx], dim=-1)
         out_idx = self.generate(idx, max_new_tokens, temperature, top_k).view(-1).to('cpu').numpy()
         return self.tokenizer.decode(out_idx)
