@@ -17,8 +17,8 @@ def get_batch(dataloader, device="cpu"):
 
 
 @torch.no_grad()
-def eval(model, data_val_iter, device='cpu', max_num_batches=24, ctx=nullcontext()):
-    assert model.training == False
+def eval(model, data_val_iter, device='cpu', max_num_batches=24, ctx=nullcontext(), *, omit_assert: bool = False):
+    assert (model.training == False) or omit_assert
 
     loss_list_val, acc_list = [], []
 
