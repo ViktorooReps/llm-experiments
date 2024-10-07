@@ -13,7 +13,7 @@ import numpy as np
 from .utils import eval, get_batch, save_checkpoint
 
 
-def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, batch_size, sequence_length, eval_freq, ckpt_path, distributed_backend,extra_args, itr=0,rng_state_dict=None):
+def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, batch_size, sequence_length, eval_freq, ckpt_path, distributed_backend,extra_args, itr=0,rng_state_dict=None,sink_token=None):
     device_type = 'cuda' if 'cuda' in str(extra_args.device) else 'cpu'
     type_ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(
         device_type=device_type, dtype=torch.bfloat16)  # extra_args.dtype)
@@ -25,7 +25,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
         batch_size=batch_size,
         seed=data_seed,
         distributed_backend=distributed_backend,
-        sink_token=model.sink_token,
+        sink_token=sink_token,
     )
     
     data["val"], val_sampler = get_dataloader(
@@ -33,7 +33,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
         sequence_length=sequence_length,
         batch_size=batch_size,
         seed=data_seed,
-        sink_token=model.sink_token,
+        sink_token=sink_token,
     )
 
     num_substeps_per_epoch = len(data["train"])

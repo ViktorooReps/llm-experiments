@@ -52,6 +52,7 @@ def main(args):
     print(f"Num validation tokens: {len(data['val'])}")
     
     model = get_model(args).to(args.device) # todo: take care of initializing the model if args.use_pretrained != 'none'
+    sink_token = model.sink_token
 
     model = distributed_backend.transform_model(model)
     
@@ -145,7 +146,7 @@ def main(args):
     stats = train(model, opt, data, args.data_seed, scheduler, args.iterations, args.acc_steps, args.batch_size, args.sequence_length, 
                   eval_freq=args.eval_freq, 
                   distributed_backend=distributed_backend,
-                  ckpt_path=f"{ckpt_path}/ckpt.pt", itr=itr, rng_state_dict=rng_state_dict, extra_args=args)
+                  ckpt_path=f"{ckpt_path}/ckpt.pt", itr=itr, rng_state_dict=rng_state_dict, extra_args=args, sink_token=sink_token)
     
     args.device = None
     args.dtype = None
