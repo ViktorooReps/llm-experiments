@@ -53,7 +53,7 @@ class Dataset(torch.utils.data.Dataset):
         idx = idx * seq_length
         x = torch.from_numpy((self.data[idx : idx + seq_length]).astype(np.int64))
         if self.add_sink:
-            x = torch.concatenate([x.new_full(1, fill_value=self.sink_token), x], dim=0)
+            x = torch.concatenate([x.new_full((1,), fill_value=self.sink_token), x], dim=0)
 
         y = torch.from_numpy(
             # source: <I> <love> <cat> <fish> <.>
