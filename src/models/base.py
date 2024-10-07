@@ -231,13 +231,9 @@ class GPTBase(nn.Module):
                 elif pn.endswith("weight") and isinstance(m, whitelist_weight_modules):
                     # weights of whitelist modules will be weight decayed
                     decay.add(fpn)
-                    print('Decay: ', fpn)
                 elif pn.endswith("weight") and isinstance(m, BLACKLIST_WEIGHT_MODULES):
                     # weights of blacklist modules will NOT be weight decayed
                     no_decay.add(fpn)
-                    print('No Decay: ', fpn)
-                else:
-                    print('Could not attribute: ', fpn)
 
         # subtle: 'transformer.wte.weight' and 'lm_head.weight' are tied, so they
         # will appear in the no_decay and decay sets respectively after the above.

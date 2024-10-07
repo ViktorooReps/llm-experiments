@@ -22,7 +22,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from models.base import GPTBase
 
-from src.models.llama import precompute_freqs_cis, LlamaBlock, RMSNorm
+from .llama import precompute_freqs_cis, LlamaBlock, RMSNorm
 
 
 class LlamaWithAbsolutePositions(GPTBase):
