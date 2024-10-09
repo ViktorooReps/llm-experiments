@@ -2,7 +2,6 @@ from contextlib import nullcontext
 from data.utils import get_dataloader
 
 import torch
-import torch.nn.functional as F
 import wandb
 import time 
 import itertools
@@ -13,27 +12,33 @@ import numpy as np
 from .utils import eval, get_batch, save_checkpoint
 
 
-def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, batch_size, sequence_length, eval_freq, ckpt_path, distributed_backend,extra_args, itr=0,rng_state_dict=None,sink_token=None):
+def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, batch_size, sequence_length, eval_freq, ckpt_path, distributed_backend,extra_args, itr=0,rng_state_dict=None):
     device_type = 'cuda' if 'cuda' in str(extra_args.device) else 'cpu'
     type_ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(
         device_type=device_type, dtype=torch.bfloat16)  # extra_args.dtype)
     best_val_loss, text_table = float('inf'), None # best_val_loss not used atm, early stopping not recommended but possible 
     substep = itr * acc_steps
+
+    block_size = extra_args.block_size
+    assert sequence_length % block_size == 0
+
+    n_blocks = sequence_length // block_size
+    # we need space for n_blocks block tokens and 1 sink token
+    initial_sequence_length = n_blocks * (block_size - extra_args.add_block_token) - extra_args.add_sink_token
+
     data["train"], train_sampler = get_dataloader(
         data["train"],
-        sequence_length=sequence_length,
+        sequence_length=initial_sequence_length,
         batch_size=batch_size,
         seed=data_seed,
-        distributed_backend=distributed_backend,
-        sink_token=sink_token,
+        distributed_backend=distributed_backend
     )
     
     data["val"], val_sampler = get_dataloader(
         data["val"],
-        sequence_length=sequence_length,
+        sequence_length=initial_sequence_length,
         batch_size=batch_size,
         seed=data_seed,
-        sink_token=sink_token,
     )
 
     num_substeps_per_epoch = len(data["train"])

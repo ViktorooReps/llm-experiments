@@ -248,7 +248,10 @@ class FlexLlama(GPTBase):
             kv_block_id = block_ids[kv_idx]
 
             # freely attend to own block and any other unmasked block and any block end token of other blocks
-            return (q_block_id == kv_block_id) or keep_blocks[kv_block_id] or block_end_mask[kv_block_id]
+            return ((q_block_id == kv_block_id)
+                    or keep_blocks[kv_block_id]
+                    or block_end_mask[kv_block_id]
+                    or (kv_block_id == 0))
 
         def document_masking(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
             # attend only within same document

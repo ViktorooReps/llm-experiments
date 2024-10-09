@@ -1,7 +1,7 @@
 import torch
 from .llama import Llama, RMSNorm
 from .llama_pos import LlamaWithAbsolutePositions
-from .llama_long_context import FlexLlamaAttention
+from .llama_long_context import FlexLlama
 from .base import GPTBase, LayerNorm
 
 
@@ -25,7 +25,7 @@ def get_model(args):
         model = LlamaWithAbsolutePositions(args)
         return model
     elif args.model == 'llama2-long-context':
-        model = FlexLlamaAttention(args)
+        model = FlexLlama(args)
         return model
     else:
         raise KeyError(f"Unknown model '{args.model}'.")
