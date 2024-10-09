@@ -31,7 +31,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--add_block_token', action='store_true')
     # Block params
     parser.add_argument('--block_size', type=int, default=64)
-    parser.add_argument('--mask_block_prob', type=int, default=0.0)
+    parser.add_argument('--mask_block_prob', type=float, default=0.0)
     # Dataset params
     parser.add_argument('--dataset', default='slimpajama', choices=['slimpajama', 'slimpajama-large', 'wikitext',
                                                                     "shakespeare-char", 'arxiv', "arxiv2000",
