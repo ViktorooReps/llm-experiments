@@ -226,11 +226,10 @@ class FlexLlama(GPTBase):
         block_ids = torch.cumsum(block_end_mask, dim=-1, dtype=torch.int)
 
         # determine which blocks to mask
-        unique_block_ids = torch.unique(block_ids)
-        keep_blocks = torch.ones_like(unique_block_ids, dtype=torch.bool)
+        keep_blocks = torch.ones((batch_size, block_ids.max()), dtype=torch.bool)
         keep_blocks.bernoulli_(
             # enable random masking only during training (similar to dropout)
-            p=self.config.mask_block_prob if self.training else 0.0
+            p=(1.0 - self.config.mask_block_prob) if self.training else 1.0
         )
 
         document_end_mask: BoolTensor = (idx == self.tokenizer.eot_token)  # noqa
@@ -244,18 +243,18 @@ class FlexLlama(GPTBase):
             return not_pad_mask[b, q_idx] & not_pad_mask[b, kv_idx]
 
         def block_masking(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
-            q_block_id = block_ids[q_idx]
-            kv_block_id = block_ids[kv_idx]
+            q_block_id = block_ids[b, q_idx]
+            kv_block_id = block_ids[b, kv_idx]
 
             # freely attend to own block and any other unmasked block and any block end token of other blocks
             return ((q_block_id == kv_block_id)
-                    | keep_blocks[kv_block_id]
-                    | block_end_mask[kv_block_id]
-                    | (kv_block_id == 0))
+                    | keep_blocks[b, kv_block_id]
+                    | block_end_mask[b, kv_idx]
+                    | (kv_idx == 0))
 
         def document_masking(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
             # attend only within same document
-            return document_ids[q_idx] == document_ids[kv_idx]
+            return document_ids[b, q_idx] == document_ids[b, kv_idx]
 
         return create_block_mask(
             and_masks(causal, padding, block_masking, document_masking),
