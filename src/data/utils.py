@@ -6,7 +6,7 @@ from .shakespeare import get_shakespeare_data
 from .wikitext import get_wikitext_data
 from .arxiv import get_arxiv_2000, get_arxiv_full
 from .openwebtext2 import get_openwebtext2_data
-from .slimpajama import get_slimpajama_data
+from .slimpajama import get_slimpajama_data, get_slimpajama_large
 
 
 def get_dataset(args) -> Dict[str, np.ndarray]:
@@ -31,6 +31,8 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
         return get_openwebtext2_data()
     if args.dataset == "slimpajama":
         return get_slimpajama_data()
+    if args.dataset == "slimpajama-large":
+        return get_slimpajama_large()
     else:
         raise NotImplementedError(f"Unknow dataset key '{args.dataset}'")
 
