@@ -220,7 +220,7 @@ class FlexLlama(GPTBase):
     def get_block_mask(self, idx: Tensor) -> BlockMask:
         batch_size, seq_length = idx.shape
 
-        pad_mask: BoolTensor = (idx == self.pad_token)  # noqa
+        not_pad_mask: BoolTensor = (idx != self.pad_token)  # noqa
 
         block_end_mask: BoolTensor = (idx == self.block_end_token)  # noqa
         block_ids = torch.cumsum(block_end_mask, dim=-1, dtype=torch.int)
@@ -241,7 +241,7 @@ class FlexLlama(GPTBase):
 
         def padding(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
             # do not attend to padding and padding should not attend to anything
-            return ~(pad_mask[b, q_idx] or pad_mask[b, kv_idx])
+            return not_pad_mask[b, q_idx] and not_pad_mask[b, kv_idx]
 
         def block_masking(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
             q_block_id = block_ids[q_idx]
@@ -264,7 +264,6 @@ class FlexLlama(GPTBase):
             Q_LEN=seq_length,
             KV_LEN=seq_length,
             BLOCK_SIZE=self.block_size,
-            _compile=True
         )
 
     def prepare_inputs(self, idx: LongTensor, targets: LongTensor | None = None) -> dict:
