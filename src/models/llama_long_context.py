@@ -226,7 +226,7 @@ class FlexLlama(GPTBase):
         block_ids = torch.cumsum(block_end_mask, dim=-1, dtype=torch.int)
 
         # determine which blocks to mask
-        keep_blocks = idx.new_ones((batch_size, block_ids.max()), dtype=torch.bool)
+        keep_blocks = idx.new_ones((batch_size, block_ids.max() + 1), dtype=torch.bool)
         keep_blocks.bernoulli_(
             # enable random masking only during training (similar to dropout)
             p=(1.0 - self.config.mask_block_prob) if self.training else 1.0
