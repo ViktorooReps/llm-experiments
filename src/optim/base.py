@@ -62,7 +62,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
     
     if extra_args.compile:
         print(f"Compiling model ...")
-        model = torch.compile(model) # requires pytorch 2.0+
+        model = torch.compile(model)  # requires pytorch 2.0+
 
     model.train()
 
@@ -86,7 +86,8 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
             
             with type_ctx:
                 with distributed_backend.get_context_for_microstep_forward(model=model, microstep_idx=microstep_idx, gradient_accumulation_steps=acc_steps):
-                    outputs = model(x, targets=y)
+                    inputs = distributed_backend.get_raw_model(model).prepare_inputs(x, y)
+                    outputs = model(**inputs)
 
             loss = outputs['loss'] / acc_steps
             loss.backward()
