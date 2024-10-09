@@ -15,7 +15,7 @@ Main differences from GPT2:
 """
 import logging
 import math
-from typing import Callable, Any, Sequence
+from typing import Callable, Any, Sequence, List
 
 import tiktoken
 import torch
@@ -106,7 +106,7 @@ def pad_to_multiple(tensor_seq: Tensor, multiple_of: int, pad_value: Any) -> Ten
     return tensor_seq
 
 
-def find_last_non_special(idx: LongTensor, specials: Sequence[int]):
+def find_last_non_special(idx: LongTensor, specials: List[int]):
     mask = torch.isin(idx, idx.new_tensor(specials), invert=True)
 
     # Reverse the sequences and convert to int64 for argmax compatibility
@@ -281,7 +281,7 @@ class FlexLlama(GPTBase):
             assert targets.shape == idx.shape, f"idx and targets shape mismatch: {targets.shape} and {idx.shape}"
 
         # we will need to mask out all added tokens at the end, so we save which special tokens were in idx before
-        special_tokens = idx.new_tensor(self.tokenizer._special_tokens.values())
+        special_tokens = idx.new_tensor(list(self.tokenizer._special_tokens.values()))
         special_tokens_mask = torch.isin(idx, special_tokens)
 
         # add sink token if there is no one
