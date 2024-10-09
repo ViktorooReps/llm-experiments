@@ -241,7 +241,7 @@ class FlexLlama(GPTBase):
 
         def padding(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
             # do not attend to padding and padding should not attend to anything
-            return not_pad_mask[b, q_idx] and not_pad_mask[b, kv_idx]
+            return not_pad_mask[b, q_idx] & not_pad_mask[b, kv_idx]
 
         def block_masking(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
             q_block_id = block_ids[q_idx]
@@ -249,9 +249,9 @@ class FlexLlama(GPTBase):
 
             # freely attend to own block and any other unmasked block and any block end token of other blocks
             return ((q_block_id == kv_block_id)
-                    or keep_blocks[kv_block_id]
-                    or block_end_mask[kv_block_id]
-                    or (kv_block_id == 0))
+                    | keep_blocks[kv_block_id]
+                    | block_end_mask[kv_block_id]
+                    | (kv_block_id == 0))
 
         def document_masking(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
             # attend only within same document
