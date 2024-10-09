@@ -24,7 +24,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
 
     n_blocks = sequence_length // block_size
     # we need space for n_blocks block tokens and 1 sink token
-    initial_sequence_length = n_blocks * (block_size - extra_args.add_block_token) - extra_args.add_sink_token
+    initial_sequence_length = n_blocks * (block_size - extra_args.add_block_end) - extra_args.add_sink_token
 
     data["train"], train_sampler = get_dataloader(
         data["train"],

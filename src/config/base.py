@@ -28,7 +28,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--grad_clip', default=0.0, type=float)  # default value is 1.0 in NanoGPT
     # Special tokens
     parser.add_argument('--add_sink', action='store_true')
-    parser.add_argument('--add_block_token', action='store_true')
+    parser.add_argument('--add_block_end', action='store_true')
     # Block params
     parser.add_argument('--block_size', type=int, default=64)
     parser.add_argument('--mask_block_prob', type=float, default=0.0)
