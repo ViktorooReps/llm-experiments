@@ -105,13 +105,13 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
         opt.zero_grad(set_to_none=True)
         itr += 1
 
-        if itr % eval_freq == 0 or itr == iterations: # from here it's only evaluation code, all the training is above
+        if itr % eval_freq == 0 or itr == iterations:  # from here it's only evaluation code, all the training is above
             if distributed_backend.is_master_process():
                 t1 = time.time()
                 dt = t1 - t0
                 epoch = substep//num_substeps_per_epoch
 
-                model.eval()
+                model.train(False)  # DistributedDataParallel does not have eval method
                 train_loss = loss.detach().cpu().item() * acc_steps
                 current_lr = scheduler.get_last_lr()[0] if scheduler is not None else extra_args.lr
                 
