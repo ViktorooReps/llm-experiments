@@ -33,10 +33,6 @@ IGNORE_INDEX = -100
 _score_mod_signature = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tensor]
 
 
-# FIXME: Remove once resolved: https://github.com/pytorch/pytorch/issues/137481
-torch._dynamo.config.optimize_ddp=False
-
-
 class FlexLlamaAttention(CausalSelfAttention):
     def forward(
             self, x,
