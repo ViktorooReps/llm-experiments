@@ -59,7 +59,6 @@ class FlexLlamaAttention(CausalSelfAttention):
         # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
-        # flex implementation of attention
         y = flex_attention(q, k, v, block_mask=block_mask, score_mod=score_mod)
 
         y = (
@@ -122,6 +121,37 @@ def find_last_non_special(idx: Tensor, specials: List[int]):
     last_pos[~no_non_special_found] = idx.size(1) - 1 - last_pos[~no_non_special_found]
 
     return last_pos
+
+
+def insert_sink(idx: Tensor, sink_token: int | None = None):
+    batch_size, _ = idx.shape
+
+    if sink_token is None:
+        return idx
+    
+    idx = torch.concatenate([
+        idx.new_full(size=(batch_size, 1), fill_value=sink_token),
+        idx
+    ], dim=-1)
+
+    return idx
+
+
+def insert_block_ends(idx: Tensor, pad_token: int, block_end_token: int, block_size: int = 128):
+    # pad to ensure that all blocks are full
+    idx = pad_to_multiple(idx, multiple_of=block_size - 1, pad_value=pad_token)
+
+    batch_size, seq_len = idx.shape
+
+    # without end block token, the size of blocks is 1 less
+    total_blocks = seq_len // (block_size - 1)
+    idx = torch.concatenate([
+        idx.reshape(total_blocks * batch_size, block_size - 1),
+        # finally, this will add block_end_token to the end of every block
+        idx.new_full(size=(total_blocks * batch_size, 1), fill_value=block_end_token)
+    ], dim=-1).reshape(batch_size, total_blocks * block_size)  # return to normal shape
+
+    return idx
 
 
 def get_block_mask_for_specials(
@@ -216,6 +246,7 @@ def get_block_mask_for_specials(
         Q_LEN=seq_length,
         KV_LEN=seq_length,
         BLOCK_SIZE=block_size,
+        _compile=True,
     )
 
 
@@ -349,25 +380,16 @@ class FlexLlama(GPTBase):
 
         # add sink token if there is no one
         if not self._is_starts_with_sink_token(idx) and self.config.add_sink:
-            idx = torch.concatenate([
-                idx.new_full(size=(batch_size, 1), fill_value=self.sink_token),
-                idx
-            ], dim=-1)
+            idx = insert_sink(idx, self.sink_token)
 
         # add block end token if not added already
         if not self._is_block_end_token_added(idx) and self.config.add_block_end:
-            # pad to ensure that all blocks are full
-            idx = pad_to_multiple(idx, multiple_of=self.block_size - 1, pad_value=self.pad_token)
-
-            batch_size, seq_len = idx.shape
-
-            # without end block token, the size of blocks is 1 less
-            total_blocks = seq_len // (self.block_size - 1)
-            idx = torch.concatenate([
-                idx.reshape(total_blocks * batch_size, self.block_size - 1),
-                # finally, this will add block_end_token to the end of every block
-                idx.new_full(size=(total_blocks * batch_size, 1), fill_value=self.block_end_token)
-            ], dim=-1).reshape(batch_size, total_blocks * self.block_size)  # return to normal shape
+            idx = insert_block_ends(
+                idx, 
+                pad_token=self.pad_token, 
+                block_end_token=self.block_end_token, 
+                block_size=self.config.block_size,
+            )
 
         # final shape
         batch_size, seq_len = idx.shape
@@ -401,7 +423,7 @@ class FlexLlama(GPTBase):
 
     def validate_inputs(self, idx: Tensor, targets: LongTensor | None = None) -> None:
         idx_shape = idx.shape
-        batch_size, seq_len = idx_shape
+        _, seq_len = idx_shape
 
         assert (
                 seq_len <= self.config.sequence_length
@@ -439,7 +461,7 @@ class FlexLlama(GPTBase):
         batch_freqs_cis = self.freqs_cis.to(x.device).repeat(1, seq_len).repeat(batch_size, 1)
         freqs_cis = batch_freqs_cis[pos]
 
-        for block_idx, block in enumerate(self.transformer.h):
+        for _, block in enumerate(self.transformer.h):
             x = block(x, freqs_cis=freqs_cis, block_mask=block_mask, score_mod=score_mod)
         x = self.transformer.ln_f(x)
 
@@ -504,12 +526,106 @@ class FlexLlama(GPTBase):
 if __name__ == "__main__":
     # test document positions
     end_token = 999
+    pad_token = 888
+    block_end = 666
+    sink_token = 555
+    device = 'cuda'
     idxes = torch.tensor([
         [0, 1, end_token, 3, 4, 5, end_token, 7, 8],
         [0, 1, 2, 3, 4, 5, 6, 7, 8],
         [0, 1, 3, 3, end_token, 5, 6, 7, 8]
-    ])
+    ], device=device)
     print('idxes, end_token =', end_token)
     print(idxes)
     print('pos')
     print(get_pos_in_documents(idxes, document_end_token=end_token))
+
+    with_sink = insert_sink(idxes, sink_token=sink_token)
+    print('with_sink')
+    print(with_sink, with_sink.shape)
+
+    with_block_ends = insert_block_ends(with_sink, pad_token=pad_token, block_end_token=block_end, block_size=128)
+    print('with_block_ends')
+    print(with_block_ends, with_block_ends.shape)
+
+    padded_idx = pad_to_multiple(with_block_ends, multiple_of=128, pad_value=pad_token)
+    print('padded')
+    print(padded_idx, padded_idx.shape)
+
+    import time
+    t = time.time()
+    block_mask = get_block_mask_for_specials(
+        padded_idx,
+        sink_token=sink_token,
+        pad_token=pad_token,
+        block_end_token=block_end,
+        document_end_token=end_token,
+        causal=True,
+        mask_block_prob=0.1,
+        block_size=128
+    )
+    print(block_mask.sparsity(), time.time() - t)
+
+    t = time.time()
+    block_mask = get_block_mask_for_specials(
+        torch.concatenate([padded_idx] * 100, dim=-1),
+        sink_token=sink_token,
+        pad_token=pad_token,
+        block_end_token=block_end,
+        document_end_token=end_token,
+        causal=True,
+        mask_block_prob=0.1,
+        block_size=128
+    )
+    print(block_mask.sparsity(), time.time() - t)
+
+    t = time.time()
+    block_mask = get_block_mask_for_specials(
+        torch.concatenate([padded_idx] * 100, dim=0),
+        sink_token=sink_token,
+        pad_token=pad_token,
+        block_end_token=block_end,
+        document_end_token=end_token,
+        causal=True,
+        mask_block_prob=0.1,
+        block_size=128
+    )
+    print(block_mask.sparsity(), time.time() - t)
+
+    t = time.time()
+    block_mask = get_block_mask_for_specials(
+        torch.concatenate([padded_idx] * 100, dim=-1),
+        sink_token=sink_token,
+        pad_token=pad_token,
+        block_end_token=block_end,
+        document_end_token=None,
+        causal=True,
+        mask_block_prob=0.1,
+        block_size=128
+    )
+    print(block_mask.sparsity(), time.time() - t)
+
+    t = time.time()
+    block_mask = get_block_mask_for_specials(
+        torch.concatenate([padded_idx] * 100, dim=-1),
+        sink_token=sink_token,
+        pad_token=pad_token,
+        block_end_token=None,
+        document_end_token=None,
+        causal=True,
+        mask_block_prob=0.1,
+        block_size=128
+    )
+    print(block_mask.sparsity(), time.time() - t)
+
+    block_mask = get_block_mask_for_specials(
+        torch.concatenate([padded_idx] * 100, dim=-1),
+        sink_token=sink_token,
+        pad_token=None,
+        block_end_token=None,
+        document_end_token=None,
+        causal=True,
+        mask_block_prob=0.1,
+        block_size=128
+    )
+    print(block_mask.sparsity(), time.time() - t)
