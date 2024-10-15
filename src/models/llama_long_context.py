@@ -26,13 +26,40 @@ from models.base import CausalSelfAttention, GPTBase
 # as of 9 Oct 2024, requires nightly build!
 from torch.nn.attention.flex_attention import flex_attention, BlockMask, and_masks, create_block_mask
 
-from models.llama import apply_rotary_emb, RMSNorm, LlamaMLP, precompute_freqs_cis
+from models.llama import RMSNorm, LlamaMLP, precompute_freqs_cis
 
 IGNORE_INDEX = -100
 _score_mod_signature = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tensor]
 
 
-class FlexLlamaAttention(CausalSelfAttention):
+def apply_rotary_emb(q, k, freqs_cis):
+    # q, k: (B, T, nh, hs)
+    # freq_cis: (B, T, hs)
+    # return: (B, T, nh, hs), (B, T, nh, hs)
+    q_ = torch.view_as_complex(q.float().reshape(*q.shape[:-1], -1, 2))
+    k_ = torch.view_as_complex(k.float().reshape(*k.shape[:-1], -1, 2))
+    batch_size, seq_length, _, hidden_size = q_.shape
+    freqs_cis = freqs_cis.view(batch_size, seq_length, 1, hidden_size)
+    xq_out = torch.view_as_real(q_ * freqs_cis).flatten(3)
+    xk_out = torch.view_as_real(k_ * freqs_cis).flatten(3)
+    return xq_out.type_as(q), xk_out.type_as(k)
+
+
+class FlexLlamaAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        # key, query, value projections for all heads, but in a batch
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+        # output projection
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        # regularization
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.dropout = config.dropout
+
     def forward(
             self, x,
             *,
@@ -46,6 +73,7 @@ class FlexLlamaAttention(CausalSelfAttention):
             T,
             C,
         ) = x.size()
+        device = x.device
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
@@ -59,7 +87,7 @@ class FlexLlamaAttention(CausalSelfAttention):
         # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
-        y = flex_attention(q, k, v, block_mask=block_mask, score_mod=score_mod)
+        y = flex_attention(q, k, v, block_mask=block_mask.to(device), score_mod=score_mod)
 
         y = (
             y.transpose(1, 2).contiguous().view(B, T, C)
@@ -233,7 +261,7 @@ def get_block_mask_for_specials(
         apply_masks.append(document_masking)
 
     def noop(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
-        return b.new_ones(dtype=torch.bool)
+        return torch.eq(q_idx, q_idx)
 
     mask = noop
     if len(apply_masks):
@@ -405,7 +433,8 @@ class FlexLlama(GPTBase):
 
         # pad to avoid any issues with FlexAttention
         idx = pad_to_multiple(idx, multiple_of=self.block_size, pad_value=self.pad_token)
-        targets = pad_to_multiple(targets, multiple_of=self.block_size, pad_value=-100)
+        if targets is not None:
+            targets = pad_to_multiple(targets, multiple_of=self.block_size, pad_value=-100)
 
         return {
             'idx': idx,
@@ -448,8 +477,6 @@ class FlexLlama(GPTBase):
             block_mask: BlockMask | None = None,
             score_mod: _score_mod_signature | None = None,
     ):
-        self.validate_inputs(idx, targets)
-
         batch_size, seq_len = idx.size()
 
         pos = get_pos_in_documents(idx, document_end_token=self.tokenizer.eot_token)
@@ -458,11 +485,18 @@ class FlexLlama(GPTBase):
         tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
 
         x = self.transformer.drop(tok_emb)
-        batch_freqs_cis = self.freqs_cis.to(x.device).repeat(1, seq_len).repeat(batch_size, 1)
-        freqs_cis = batch_freqs_cis[pos]
+
+        freqs_cis = self.freqs_cis.to(idx.device).unsqueeze(0).repeat(batch_size, 1, 1)
+        freqs_cis = freqs_cis[:, :seq_len, :]
+
+        # Create a batch index tensor
+        batch_indices = torch.arange(batch_size).unsqueeze(1).to(idx.device)  # Shape: (batch_size, 1)
+
+        # Use advanced indexing to select the positional encodings
+        freq_pos = freqs_cis[batch_indices, pos] 
 
         for _, block in enumerate(self.transformer.h):
-            x = block(x, freqs_cis=freqs_cis, block_mask=block_mask, score_mod=score_mod)
+            x = block(x, freqs_cis=freq_pos, block_mask=block_mask, score_mod=score_mod)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -538,7 +572,8 @@ if __name__ == "__main__":
     print('idxes, end_token =', end_token)
     print(idxes)
     print('pos')
-    print(get_pos_in_documents(idxes, document_end_token=end_token))
+    pos = get_pos_in_documents(idxes, document_end_token=end_token)
+    print(pos)
 
     with_sink = insert_sink(idxes, sink_token=sink_token)
     print('with_sink')
@@ -556,76 +591,44 @@ if __name__ == "__main__":
     t = time.time()
     block_mask = get_block_mask_for_specials(
         padded_idx,
-        sink_token=sink_token,
-        pad_token=pad_token,
-        block_end_token=block_end,
-        document_end_token=end_token,
-        causal=True,
-        mask_block_prob=0.1,
-        block_size=128
-    )
-    print(block_mask.sparsity(), time.time() - t)
-
-    t = time.time()
-    block_mask = get_block_mask_for_specials(
-        torch.concatenate([padded_idx] * 100, dim=-1),
-        sink_token=sink_token,
-        pad_token=pad_token,
-        block_end_token=block_end,
-        document_end_token=end_token,
-        causal=True,
-        mask_block_prob=0.1,
-        block_size=128
-    )
-    print(block_mask.sparsity(), time.time() - t)
-
-    t = time.time()
-    block_mask = get_block_mask_for_specials(
-        torch.concatenate([padded_idx] * 100, dim=0),
-        sink_token=sink_token,
-        pad_token=pad_token,
-        block_end_token=block_end,
-        document_end_token=end_token,
-        causal=True,
-        mask_block_prob=0.1,
-        block_size=128
-    )
-    print(block_mask.sparsity(), time.time() - t)
-
-    t = time.time()
-    block_mask = get_block_mask_for_specials(
-        torch.concatenate([padded_idx] * 100, dim=-1),
-        sink_token=sink_token,
-        pad_token=pad_token,
-        block_end_token=block_end,
-        document_end_token=None,
-        causal=True,
-        mask_block_prob=0.1,
-        block_size=128
-    )
-    print(block_mask.sparsity(), time.time() - t)
-
-    t = time.time()
-    block_mask = get_block_mask_for_specials(
-        torch.concatenate([padded_idx] * 100, dim=-1),
-        sink_token=sink_token,
-        pad_token=pad_token,
-        block_end_token=None,
-        document_end_token=None,
-        causal=True,
-        mask_block_prob=0.1,
-        block_size=128
-    )
-    print(block_mask.sparsity(), time.time() - t)
-
-    block_mask = get_block_mask_for_specials(
-        torch.concatenate([padded_idx] * 100, dim=-1),
-        sink_token=sink_token,
+        sink_token=None,
         pad_token=None,
         block_end_token=None,
         document_end_token=None,
-        causal=True,
+        causal=False,
         mask_block_prob=0.1,
         block_size=128
     )
     print(block_mask.sparsity(), time.time() - t)
+
+    pos = get_pos_in_documents(padded_idx, document_end_token=end_token)
+    freqs_cis = precompute_freqs_cis(512 // 16, 128).to(device).unsqueeze(0).repeat(3, 1, 1)
+
+    # Use torch.gather to index freqs_cis based on pos
+    # We need to expand pos to match the last dimension of freqs_cis
+    B, S, V = freqs_cis.shape
+    pos_expanded = pos.unsqueeze(-1).expand(B, S, V)
+
+    # Gather the corresponding vectors
+    freq_pos = torch.gather(freqs_cis, 1, pos_expanded)
+
+    from argparse import Namespace
+    att = FlexLlamaAttention(Namespace(
+        n_embd=512,
+        n_head=16,
+        bias=False,
+        dropout=0.0,
+        sequence_length=128,
+    )).to(device)
+
+    def causal(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    block_mask = create_block_mask(causal, None, None, 128, 128, 'cuda', 128, True)
+    flex_attention(
+        torch.rand((16, 128, 16, 32), device='cuda'),
+        torch.rand((16, 128, 16, 32), device='cuda'),
+        torch.rand((16, 128, 16, 32), device='cuda'),
+        block_mask=block_mask
+    )
+    att(torch.rand((3, 128, 512), device=device), block_mask=block_mask, freqs_cis=freq_pos)
