@@ -20,7 +20,7 @@ import tiktoken
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from models.base import GPTBase
+from src.models.modeling_base import GPTBase
 
 from .llama import precompute_freqs_cis, LlamaBlock, RMSNorm
 
@@ -87,23 +87,23 @@ class LlamaWithAbsolutePositions(GPTBase):
         n_params = sum(p.numel() for p in self.parameters())
         return n_params
 
-    def forward(self, idx, targets=None, get_logits=False):
-        device = idx.device
-        b, t = idx.size()
+    def forward(self, input_ids, targets=None, get_logits=False):
+        device = input_ids.device
+        b, t = input_ids.size()
         assert (
             t <= self.config.sequence_length
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_length}"
 
         if self.config.add_sink:
-            assert (idx[:, 0] == self.sink_token).all(), (f"Sequences should start with sink token: "
+            assert (input_ids[:, 0] == self.sink_token).all(), (f"Sequences should start with sink token: "
                                                           f"<sink> = {self.sink_token}, "
-                                                          f"but they start with {idx[:, 0]}")
+                                                          f"but they start with {input_ids[:, 0]}")
 
         # shape (1, t)
         pos = torch.arange(0, t, dtype=torch.long, device=device)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+        tok_emb = self.transformer.wte(input_ids)  # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
 

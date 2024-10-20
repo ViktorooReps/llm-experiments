@@ -21,12 +21,16 @@ import torch
 import torch.nn as nn
 from torch import Tensor, LongTensor
 from torch.nn import functional as F
-from models.base import CausalSelfAttention, GPTBase
+from transformers import GenerationMixin
+
+from src.models.configuration_base import GPTBaseConfig
+from src.models.configuration_llama_long_context import FlexLlamaConfig
+from src.models.modeling_base import GPTBase
 
 # as of 9 Oct 2024, requires nightly build!
 from torch.nn.attention.flex_attention import flex_attention, BlockMask, and_masks, create_block_mask
 
-from models.llama import RMSNorm, LlamaMLP, precompute_freqs_cis
+from src.models.llama import RMSNorm, LlamaMLP, precompute_freqs_cis
 
 IGNORE_INDEX = -100
 _score_mod_signature = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tensor]
@@ -299,39 +303,13 @@ def get_pos_in_documents(idx: Tensor, document_end_token: int | None = None) -> 
 
 
 class FlexLlama(GPTBase):
-    def __init__(self, config):
+    config_class = FlexLlamaConfig
+
+    def __init__(self, config: FlexLlamaConfig):
         super().__init__(config)
         assert config.sequence_length is not None
-        self.config = config
-        self.tokenizer = tiktoken.get_encoding("gpt2")
-        vocab_size = self.tokenizer.n_vocab
 
-        self.pad_token = vocab_size
-        vocab_size += 1
-        new_special_tokens = {'<|pad|>': self.pad_token}
-
-        self.sink_token = None
-        if config.add_sink:
-            self.sink_token = vocab_size
-            vocab_size += 1
-            new_special_tokens['<|sink|>'] = self.sink_token
-
-        self.block_end_token = None
-        self.block_size = config.block_size
-        if config.add_block_end:
-            self.block_end_token = vocab_size
-            vocab_size += 1
-            new_special_tokens['<|block_end|>'] = self.block_end_token
-
-        self.sink_token = self.tokenizer.n_vocab
-        self.tokenizer = tiktoken.Encoding(
-            name='gpt2-extended',
-            pat_str=self.tokenizer._pat_str,
-            mergeable_ranks=self.tokenizer._mergeable_ranks,
-            special_tokens={**new_special_tokens, **self.tokenizer._special_tokens}
-        )
-
-        vocab_size = self.tokenizer.n_vocab
+        vocab_size = config.vocab_size
 
         # create the token and position embeddings
         self.head_dim = config.n_embd // config.n_head
@@ -375,72 +353,72 @@ class FlexLlama(GPTBase):
         n_params = sum(p.numel() for p in self.parameters())
         return n_params
 
-    def _is_block_end_token_added(self, idx: Tensor) -> bool:
-        if len(idx.shape) == 2:
-            return torch.eq(idx[:, self.block_size - 1::self.block_size], self.block_end_token).all().item()
-        if len(idx.shape) == 1:
-            return torch.eq(idx[self.block_size - 1::self.block_size], self.block_end_token).item()
-        raise ValueError(f"Unexpected idx shape {idx.shape}")
+    def _is_block_end_token_added(self, input_ids: Tensor) -> bool:
+        if len(input_ids.shape) == 2:
+            return torch.eq(input_ids[:, self.block_size - 1::self.block_size], self.block_end_token).all().item()
+        if len(input_ids.shape) == 1:
+            return torch.eq(input_ids[self.block_size - 1::self.block_size], self.block_end_token).item()
+        raise ValueError(f"Unexpected idx shape {input_ids.shape}")
 
-    def _is_starts_with_sink_token(self, idx: Tensor) -> bool:
-        if len(idx.shape) == 2:
-            return torch.eq(idx[:, 0], self.sink_token).all().item()
-        if len(idx.shape) == 1:
-            return torch.eq(idx[0], self.sink_token).item()
-        raise ValueError(f"Unexpected idx shape {idx.shape}")
+    def _is_starts_with_sink_token(self, input_ids: Tensor) -> bool:
+        if len(input_ids.shape) == 2:
+            return torch.eq(input_ids[:, 0], self.sink_token).all().item()
+        if len(input_ids.shape) == 1:
+            return torch.eq(input_ids[0], self.sink_token).item()
+        raise ValueError(f"Unexpected idx shape {input_ids.shape}")
 
-    def prepare_inputs(self, idx: Tensor, targets: Tensor | None = None) -> dict:
+    def prepare_inputs(self, input_ids: Tensor, targets: Tensor | None = None) -> dict:
         # make inputs batched
-        if len(idx.shape) == 1:
-            idx = idx.unsqueeze(0)
+        if len(input_ids.shape) == 1:
+            input_ids = input_ids.unsqueeze(0)
 
-        batch_size, seq_len = idx.shape
+        batch_size, seq_len = input_ids.shape
 
         if targets is not None:
             if len(targets.shape) == 1:
                 targets = targets.unsqueeze(0)
 
-            assert targets.shape == idx.shape, f"idx and targets shape mismatch: {targets.shape} and {idx.shape}"
+            assert targets.shape == input_ids.shape, f"idx and targets shape mismatch: {targets.shape} and {input_ids.shape}"
 
         # we will need to mask out all added tokens at the end, so we save which special tokens were in idx before
-        special_tokens = idx.new_tensor(list(self.tokenizer._special_tokens.values()))
-        special_tokens_mask = torch.isin(idx, special_tokens)
+        special_tokens = input_ids.new_tensor(list(self.tokenizer._special_tokens.values()))
+        special_tokens_mask = torch.isin(input_ids, special_tokens)
 
         # add sink token if there is no one
-        if not self._is_starts_with_sink_token(idx) and self.config.add_sink:
-            idx = insert_sink(idx, self.sink_token)
+        if not self._is_starts_with_sink_token(input_ids) and self.config.add_sink:
+            input_ids = insert_sink(input_ids, self.sink_token)
 
         # add block end token if not added already
-        if not self._is_block_end_token_added(idx) and self.config.add_block_end:
-            idx = insert_block_ends(
-                idx, 
+        if not self._is_block_end_token_added(input_ids) and self.config.add_block_end:
+            input_ids = insert_block_ends(
+                input_ids,
                 pad_token=self.pad_token, 
                 block_end_token=self.block_end_token, 
                 block_size=self.config.block_size,
             )
 
         # final shape
-        batch_size, seq_len = idx.shape
+        batch_size, seq_len = input_ids.shape
 
         if targets is not None:
             # we've added special tokens to idx, so now we need to fix targets
             new_targets = targets.new_full((batch_size, seq_len), fill_value=IGNORE_INDEX)
-            new_special_tokens_mask = torch.isin(idx, special_tokens)
+            new_special_tokens_mask = torch.isin(input_ids, special_tokens)
 
             # we ignore targets for all special tokens, and keep original targets for all non-special tokens
             new_targets[~new_special_tokens_mask] = targets[~special_tokens_mask]
             targets = new_targets
 
         # pad to avoid any issues with FlexAttention
-        idx = pad_to_multiple(idx, multiple_of=self.block_size, pad_value=self.pad_token)
+        input_ids = pad_to_multiple(input_ids, multiple_of=self.block_size, pad_value=self.pad_token)
         if targets is not None:
             targets = pad_to_multiple(targets, multiple_of=self.block_size, pad_value=-100)
 
         return {
-            'idx': idx,
+            'input_ids': input_ids,
             'targets': targets,
             'block_mask': get_block_mask_for_specials(
-                idx,
+                input_ids,
                 pad_token=self.pad_token,
                 block_end_token=self.block_end_token,
                 document_end_token=self.tokenizer.eot_token,
@@ -470,27 +448,26 @@ class FlexLlama(GPTBase):
 
     def forward(
             self,
-            idx: Tensor,
-            targets: Tensor | None = None,
-            get_logits: bool = False,
-            *,
+            input_ids: Tensor,
+            labels: Tensor | None = None,
             block_mask: BlockMask | None = None,
             score_mod: _score_mod_signature | None = None,
+            get_logits: bool = False
     ):
-        batch_size, seq_len = idx.size()
+        batch_size, seq_len = input_ids.size()
 
-        pos = get_pos_in_documents(idx, document_end_token=self.tokenizer.eot_token)
+        pos = get_pos_in_documents(input_ids, document_end_token=self.tokenizer.eot_token)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+        tok_emb = self.transformer.wte(input_ids)  # token embeddings of shape (b, t, n_embd)
 
         x = self.transformer.drop(tok_emb)
 
-        freqs_cis = self.freqs_cis.to(idx.device).unsqueeze(0).repeat(batch_size, 1, 1)
+        freqs_cis = self.freqs_cis.to(input_ids.device).unsqueeze(0).repeat(batch_size, 1, 1)
         freqs_cis = freqs_cis[:, :seq_len, :]
 
         # Create a batch index tensor
-        batch_indices = torch.arange(batch_size).unsqueeze(1).to(idx.device)  # Shape: (batch_size, 1)
+        batch_indices = torch.arange(batch_size).unsqueeze(1).to(input_ids.device)  # Shape: (batch_size, 1)
 
         # Use advanced indexing to select the positional encodings
         freq_pos = freqs_cis[batch_indices, pos] 
@@ -499,15 +476,15 @@ class FlexLlama(GPTBase):
             x = block(x, freqs_cis=freq_pos, block_mask=block_mask, score_mod=score_mod)
         x = self.transformer.ln_f(x)
 
-        if targets is not None:
+        if labels is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=IGNORE_INDEX
+                logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=IGNORE_INDEX
             )
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last non-special token
-            last_non_special_idx_per_batch = find_last_non_special(idx, list(self.tokenizer._special_tokens.values()))
+            last_non_special_idx_per_batch = find_last_non_special(input_ids, list(self.tokenizer._special_tokens.values()))
             logits = self.lm_head(
                 x[torch.arange(batch_size), last_non_special_idx_per_batch]
             )
@@ -557,78 +534,13 @@ class FlexLlama(GPTBase):
         return self.tokenizer.decode(out_idx)
 
 
+class FlexLlamaForCausalLM(FlexLlama, GenerationMixin):
+    def prepare_inputs_for_generation(self, input_ids: Tensor, **kwargs):
+        return {
+            **self.prepare_inputs(input_ids),
+            **kwargs
+        }
+
+
 if __name__ == "__main__":
-    # test document positions
-    end_token = 999
-    pad_token = 888
-    block_end = 666
-    sink_token = 555
-    device = 'cuda'
-    idxes = torch.tensor([
-        [0, 1, end_token, 3, 4, 5, end_token, 7, 8],
-        [0, 1, 2, 3, 4, 5, 6, 7, 8],
-        [0, 1, 3, 3, end_token, 5, 6, 7, 8]
-    ], device=device)
-    print('idxes, end_token =', end_token)
-    print(idxes)
-    print('pos')
-    pos = get_pos_in_documents(idxes, document_end_token=end_token)
-    print(pos)
-
-    with_sink = insert_sink(idxes, sink_token=sink_token)
-    print('with_sink')
-    print(with_sink, with_sink.shape)
-
-    with_block_ends = insert_block_ends(with_sink, pad_token=pad_token, block_end_token=block_end, block_size=128)
-    print('with_block_ends')
-    print(with_block_ends, with_block_ends.shape)
-
-    padded_idx = pad_to_multiple(with_block_ends, multiple_of=128, pad_value=pad_token)
-    print('padded')
-    print(padded_idx, padded_idx.shape)
-
-    import time
-    t = time.time()
-    block_mask = get_block_mask_for_specials(
-        padded_idx,
-        sink_token=None,
-        pad_token=None,
-        block_end_token=None,
-        document_end_token=None,
-        causal=False,
-        mask_block_prob=0.1,
-        block_size=128
-    )
-    print(block_mask.sparsity(), time.time() - t)
-
-    pos = get_pos_in_documents(padded_idx, document_end_token=end_token)
-    freqs_cis = precompute_freqs_cis(512 // 16, 128).to(device).unsqueeze(0).repeat(3, 1, 1)
-
-    # Use torch.gather to index freqs_cis based on pos
-    # We need to expand pos to match the last dimension of freqs_cis
-    B, S, V = freqs_cis.shape
-    pos_expanded = pos.unsqueeze(-1).expand(B, S, V)
-
-    # Gather the corresponding vectors
-    freq_pos = torch.gather(freqs_cis, 1, pos_expanded)
-
-    from argparse import Namespace
-    att = FlexLlamaAttention(Namespace(
-        n_embd=512,
-        n_head=16,
-        bias=False,
-        dropout=0.0,
-        sequence_length=128,
-    )).to(device)
-
-    def causal(b, h, q_idx, kv_idx):
-        return q_idx >= kv_idx
-
-    block_mask = create_block_mask(causal, None, None, 128, 128, 'cuda', 128, True)
-    flex_attention(
-        torch.rand((16, 128, 16, 32), device='cuda'),
-        torch.rand((16, 128, 16, 32), device='cuda'),
-        torch.rand((16, 128, 16, 32), device='cuda'),
-        block_mask=block_mask
-    )
-    att(torch.rand((3, 128, 512), device=device), block_mask=block_mask, freqs_cis=freq_pos)
+    pass

@@ -96,7 +96,7 @@ src/
     main.py         # pick the right data, model, and training function
     config/
         __init__.py # contains CONFIG_FORMAT_TO_MODULE_MAP mapping the name given to the --config_format flag with a python conf file
-        base.py     # config for the base model
+        modeling_base.py     # config for the base model
     data/
         utils.py    # contains the get_dataset function
         wikitext.py # load/process wikitext
@@ -106,11 +106,11 @@ src/
         ...
     models/
         utils.py    # contains the get_model function
-        base.py     # contains the standard transformer base architecture
+        modeling_base.py     # contains the standard transformer base architecture
         llama.py    # llama architecture
     optim/
         utils.py    # contains eval and get_batch functions
-        base.py     # training function for the base and llama models
+        modeling_base.py     # training function for the base and llama models
     distributed/
         # code to enable simple distributed training
 ```

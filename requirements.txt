@@ -1,10 +1,14 @@
+blobfile  # needed for tiktoken to save tokenizer
 tiktoken
-# pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu121
 torch
 torchaudio
 torchvision
-tqdm==4.65.0
-transformers
+tqdm
+transformers[torch]  # [torch] is needed for Trainer
 wandb
 datasets
 zstandard
+humanize
+
+# to enable FlexAttention, use this
+# pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu121

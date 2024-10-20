@@ -14,6 +14,9 @@ import tiktoken
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from transformers import PreTrainedModel
+
+from .configuration_base import GPTBaseConfig
 
 
 class LayerNorm(nn.Module):
@@ -30,18 +33,18 @@ class LayerNorm(nn.Module):
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config: GPTBaseConfig):
         super().__init__()
-        assert config.n_embd % config.n_head == 0
+        assert config.hidden_size % config.num_attention_heads == 0
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+        self.c_attn = nn.Linear(config.hidden_size, 3 * config.hidden_size, bias=config.bias)
         # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=config.bias)
         # regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
+        self.n_head = config.num_attention_heads
+        self.n_embd = config.hidden_size
         self.dropout = config.dropout
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -80,10 +83,10 @@ class CausalSelfAttention(nn.Module):
 
 class MLP(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config: GPTBaseConfig):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_fc    = nn.Linear(config.hidden_size, 4 * config.hidden_size, bias=config.bias)
+        self.c_proj  = nn.Linear(4 * config.hidden_size, config.hidden_size, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
         self.activation = nn.GELU()
 
@@ -97,26 +100,26 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config: GPTBaseConfig):
         super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+        self.ln_1 = LayerNorm(config.hidden_size, bias=config.bias)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
+        self.ln_2 = LayerNorm(config.hidden_size, bias=config.bias)
         self.mlp = MLP(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
-    
 
-class GPTBase(nn.Module):
 
-    def __init__(self, config):
-        super().__init__()
+class GPTBase(PreTrainedModel):
+    config_class = GPTBaseConfig
+
+    def __init__(self, config: GPTBaseConfig):
+        super().__init__(config)
         assert config.vocab_size is not None
         assert config.sequence_length is not None
-        self.config = config
         self.tokenizer = tiktoken.get_encoding("gpt2")
         self.sink_token = None
 
@@ -130,14 +133,14 @@ class GPTBase(nn.Module):
             )
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.sequence_length, config.n_embd),
+            wte = nn.Embedding(config.vocab_size, config.hidden_size),
+            wpe = nn.Embedding(config.sequence_length, config.hidden_size),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f = LayerNorm(config.n_embd, bias=config.bias),
+            h = nn.ModuleList([Block(config) for _ in range(config.num_hidden_layers)]),
+            ln_f = LayerNorm(config.hidden_size, bias=config.bias),
         ))
 
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
@@ -174,24 +177,24 @@ class GPTBase(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None, get_logits=False):
-        device = idx.device
-        b, t = idx.size()
+    def forward(self, input_ids, labels=None, get_logits=False):
+        device = input_ids.device
+        b, t = input_ids.size()
         assert t <= self.config.sequence_length, f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_length}"
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        tok_emb = self.transformer.wte(input_ids) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
 
-        if targets is not None:
+        if labels is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-1)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
@@ -208,11 +211,6 @@ class GPTBase(nn.Module):
         self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:sequence_length])
         for block in self.transformer.h:
             block.attn.bias = block.attn.bias[:,:,:sequence_length,:sequence_length]
-
-    @classmethod
-    def from_pretrained(cls, model_type, override_args=None):
-        # TODO
-        pass
 
     def get_parameter_group_specs(self):
         """
@@ -272,6 +270,11 @@ class GPTBase(nn.Module):
             {"params": sorted(list(no_decay)), "weight_decay": 0.0},
         ]
 
+    def get_input_embeddings(self):
+        return self.transformer.wte
+
+    def get_output_embeddings(self):
+        return self.lm_head
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
@@ -299,7 +302,7 @@ class GPTBase(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
-    
+
     @torch.no_grad()
     def generate_from_string(self, in_str, max_new_tokens, temperature=1.0, top_k=None):
         idx = torch.tensor(self.tokenizer.encode(in_str, allowed_special={"<|endoftext|>"})).view(1, -1).to(self.lm_head.weight.device)

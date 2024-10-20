@@ -1,8 +1,8 @@
 import torch
 from .llama import Llama, RMSNorm
 from .llama_pos import LlamaWithAbsolutePositions
-from .llama_long_context import FlexLlama
-from .base import GPTBase, LayerNorm
+from .modelling_llama_long_context import FlexLlama
+from .modeling_base import GPTBase, LayerNorm
 
 
 BLACKLIST_WEIGHT_MODULES = (

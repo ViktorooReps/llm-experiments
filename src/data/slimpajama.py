@@ -1,124 +1,113 @@
+import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List
+
 from tqdm import tqdm
 import numpy as np
 import tiktoken
 from datasets import load_dataset
 import os
 
+from transformers import PreTrainedTokenizer, BatchEncoding
+
+from src.data.base import BaseDatasetConfig
 
 SPJ_DATA_PATH = os.path.join(os.path.dirname(__file__), "datasets/slimpajama6B/")
 SPJ_DATA_PATH_LARGE = os.path.join(os.path.dirname(__file__), "datasets/slimpajama_large/")
 SPJ_CHUNK_1_DATA_PATH = os.path.join(SPJ_DATA_PATH, "chunk1")
 
+DATASETS_PATH = os.path.join(os.path.dirname(__file__), 'datasets')
 
-tknzr = tiktoken.get_encoding("gpt2")
+
+def frozenset_hash(frozen_vocab):
+    # Convert frozenset to a sorted string (consistent ordering)
+    vocab_str = ''.join(sorted(map(str, frozen_vocab)))
+    return hashlib.md5(vocab_str.encode()).hexdigest()
 
 
-def get_slimpajama_data(num_proc=40):
-    if not os.path.exists(os.path.join(SPJ_DATA_PATH, "train.bin")):
-        os.makedirs(SPJ_DATA_PATH, exist_ok=True)
-        dataset = load_dataset("DKYoon/SlimPajama-6B")
+@dataclass
+class SlimpajamaDatasetConfig(BaseDatasetConfig):
+    n_chunks: int = 1
+    splits: str = 'train+validation'
 
-        def process(example):
-            ids = tknzr.encode_ordinary(
-                example["text"]
-            )  # encode_ordinary ignores any special tokens
-            ids.append(
-                tknzr.eot_token
-            )  # add the end of text token, e.g. 50256 for gpt2 bpe
-            out = {"ids": ids, "len": len(ids)}
-            return out
+    def get_splits(self) -> list[str]:
+        return self.splits.split('+')
 
-        # tokenize the dataset
-        tokenized = dataset.map(
-            process,
-            remove_columns=["text"],
-            desc="tokenizing the splits",
-            num_proc=num_proc,
+
+def get_slimpajama(
+        tokenizer: PreTrainedTokenizer,
+        config: SlimpajamaDatasetConfig = SlimpajamaDatasetConfig()
+) -> dict[str, list[np.array]]:
+    """
+    Uses the tokenizer to encode the SlimPajama dataset and writes it in original chunks to disk. Returns the set
+    of data sources for each split of the dataset.
+    """
+    dtype = np.uint16  # (can do since enc.max_token_value == 50256 is < 2**16)
+
+    if tokenizer.eos_token_id is None:
+        raise ValueError(f"No EOS token found in the tokenizer")
+
+    tokenizer_hash = frozenset_hash(frozenset(tokenizer.get_vocab().items()))
+
+    datasets_path = Path(DATASETS_PATH)
+    datasets_path.mkdir(exist_ok=True)
+
+    spj_path = datasets_path.joinpath(f"slimpajama_tok-{tokenizer.__class__.__name__}-{tokenizer_hash}")
+    spj_path.mkdir(exist_ok=True)
+
+    def tokenize_batch(batch):
+        tokenized_batch: BatchEncoding = tokenizer(
+            batch["text"],
+            padding=False,
+            add_special_tokens=False
         )
 
-        # concatenate all the ids in each dataset into one large file we can use for training
-        for split, dset in tokenized.items():
-            if split == "train":
-                dset = dset.shuffle(seed=2357, keep_in_memory=True)
+        return {
+            'ids': [ids + [tokenizer.eos_token_id] for ids in tokenized_batch["input_ids"]],
+            'len': list(map(len, tokenized_batch["ids"]))
+        }
 
-            arr_len = np.sum(dset["len"])
-            filename = os.path.join(SPJ_DATA_PATH, f"{split}.bin")
-            dtype = np.uint16  # (can do since enc.max_token_value == 50256 is < 2**16)
-            arr = np.memmap(filename, dtype=dtype, mode="w+", shape=(arr_len,))
-            total_batches = min(1024, len(dset))
+    mmaped_chunks = {}
 
-            idx = 0
-            for batch_idx in tqdm(range(total_batches), desc=f"writing {filename}"):
-                # Batch together samples for faster write
-                batch = dset.shard(
-                    num_shards=total_batches, index=batch_idx, contiguous=True
-                ).with_format("numpy")
-                arr_batch = np.concatenate(batch["ids"])
-                # Write into mmap
-                arr[idx : idx + len(arr_batch)] = arr_batch
-                idx += len(arr_batch)
-            arr.flush()
+    for split in config.get_splits():
+        split_dir = spj_path.joinpath(split)
+        split_dir.mkdir(exist_ok=True)
 
-    train_data = np.memmap(
-        os.path.join(SPJ_DATA_PATH, "train.bin"), dtype=np.uint16, mode="r"
-    )
-    val_data = np.memmap(
-        os.path.join(SPJ_DATA_PATH, "validation.bin"), dtype=np.uint16, mode="r"
-    )
+        mmaped_chunks[split] = []
 
-    return {"train": train_data, "val": val_data}
+        for chunk in range(1, config.n_chunks + 1):
+            chunk_path = split_dir.joinpath(f"chunk{chunk}.bin")
 
-def get_slimpajama_chunk1(num_proc=40):
-    if not os.path.exists(os.path.join(SPJ_CHUNK_1_DATA_PATH, "train.bin")):
-        os.makedirs(SPJ_CHUNK_1_DATA_PATH, exist_ok=True)
-        dataset = load_dataset("cerebras/SlimPajama-627B", split="train/chunk1")
+            if not chunk_path.exists():
+                dataset = load_dataset("cerebras/SlimPajama-627B", split=f"{split}/chunk{chunk}")
+                tokenized = dataset.map(  # noqa
+                    tokenize_batch,
+                    remove_columns=dataset.column_names,
+                    desc=f"tokenizing {split}/chunk{chunk}",
+                    batched=True,
+                    num_proc=config.n_jobs,
+                )
 
-        def process(example):
-            ids = tknzr.encode_ordinary(
-                example["text"]
-            )  # encode_ordinary ignores any special tokens
-            ids.append(
-                tknzr.eot_token
-            )  # add the end of text token, e.g. 50256 for gpt2 bpe
-            out = {"ids": ids, "len": len(ids)}
-            return out
+                arr_len = np.sum(tokenized["len"])
+                total_batches = min(1024, len(tokenized))
 
-        # tokenize the dataset
-        tokenized = dataset.map(
-            process,
-            remove_columns=["text"],
-            desc="tokenizing the splits",
-            num_proc=num_proc,
-        )
+                arr = np.memmap(chunk_path, dtype=dtype, mode="w+", shape=(arr_len,))
 
-        # concatenate all the ids in each dataset into one large file we can use for training
-        for split, dset in tokenized.items():
-            if split == "train":
-                dset = dset.shuffle(seed=2357, keep_in_memory=True)
+                idx = 0
+                for batch_idx in tqdm(range(total_batches), desc=f"writing {chunk_path}"):
+                    # Batch together samples for faster write
+                    batch = tokenized.shard(
+                        num_shards=total_batches, index=batch_idx, contiguous=True
+                    ).with_format("numpy")
+                    arr_batch = np.concatenate(batch["ids"])
+                    # Write into mmap
+                    arr[idx: idx + len(arr_batch)] = arr_batch
+                    idx += len(arr_batch)
+                arr.flush()
 
-            arr_len = np.sum(dset["len"])
-            filename = os.path.join(SPJ_DATA_PATH, f"{split}.bin")
-            dtype = np.uint16  # (can do since enc.max_token_value == 50256 is < 2**16)
-            arr = np.memmap(filename, dtype=dtype, mode="w+", shape=(arr_len,))
-            total_batches = min(1024, len(dset))
+            # load the chunk in read-only mmap
 
-            idx = 0
-            for batch_idx in tqdm(range(total_batches), desc=f"writing {filename}"):
-                # Batch together samples for faster write
-                batch = dset.shard(
-                    num_shards=total_batches, index=batch_idx, contiguous=True
-                ).with_format("numpy")
-                arr_batch = np.concatenate(batch["ids"])
-                # Write into mmap
-                arr[idx: idx + len(arr_batch)] = arr_batch
-                idx += len(arr_batch)
-            arr.flush()
+            mmaped_chunks[split].append(np.memmap(chunk_path, dtype=dtype, mode="r"))
 
-    train_data = np.memmap(
-        os.path.join(SPJ_CHUNK_1_DATA_PATH, "train.bin"), dtype=np.uint16, mode="r"
-    )
-    val_data = np.memmap(
-        os.path.join(SPJ_CHUNK_1_DATA_PATH, "validation.bin"), dtype=np.uint16, mode="r"
-    )
-
-    return {"train": train_data, "val": val_data}
+    return mmaped_chunks

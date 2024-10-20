@@ -1,61 +1,70 @@
+from typing import Type
+
 import numpy as np
-from typing import Dict
 import torch
+from transformers import PreTrainedTokenizer
 
-from .shakespeare import get_shakespeare_data
-from .wikitext import get_wikitext_data
-from .arxiv import get_arxiv_2000, get_arxiv_full
-from .openwebtext2 import get_openwebtext2_data
-from .slimpajama import get_slimpajama_data, get_slimpajama_chunk1
+from .base import BaseDatasetConfig
+from .slimpajama import get_slimpajama, SlimpajamaDatasetConfig
 
 
-def get_dataset(args) -> Dict[str, np.ndarray]:
-    """ Fetch the right dataset given by the args.dataset parameter. The logic for each dataset is
-     contained in its own python file. The expected format at the moment is a dictionary of np.memmap
-     containing two keys: 'train' and 'val', corresponding to the tokenized training and validation data. """
-    if args.dataset == 'wikitext':
-        return get_wikitext_data()
-    if args.dataset == "shakespeare-char":
-        return get_shakespeare_data()
-    if args.dataset == "arxiv2000":
-        return get_arxiv_2000()
-    if args.dataset == "arxiv":
-        return get_arxiv_full()
-    if args.dataset == "arxiv+wiki":
-        arxiv_data = get_arxiv_full()
-        wiki_data = get_wikitext_data()
-        train_data = np.concatenate((arxiv_data['train'], wiki_data['train']))
-        val_data = np.concatenate((arxiv_data['val'], wiki_data['val']))
-        return {'train': train_data, 'val': val_data}
-    if args.dataset == 'openwebtext2':
-        return get_openwebtext2_data()
-    if args.dataset == "slimpajama":
-        return get_slimpajama_data()
-    if args.dataset == "slimpajama-large":
-        return get_slimpajama_chunk1()
+def get_config_type(dataset_name: str) -> Type[BaseDatasetConfig]:
+    if dataset_name == 'slimpajama':
+        return SlimpajamaDatasetConfig
     else:
-        raise NotImplementedError(f"Unknow dataset key '{args.dataset}'")
+        raise NotImplementedError(f"Unknown dataset '{dataset_name}'")
+
+
+def get_data(tokenizer: PreTrainedTokenizer, dataset_name: str, config: BaseDatasetConfig) -> dict[str, list[np.ndarray]]:
+    """ Fetch the right dataset given by the dataset_name parameter. The logic for each dataset is
+     contained in its own python file. The expected format at the moment is a dictionary of np.memmap
+     containing two keys: 'train' and 'validation', corresponding to the tokenized training and validation data. """
+    if dataset_name == 'slimpajama':
+        assert isinstance(config, get_config_type(dataset_name)), f'incorrect config type: {config.__class__.__name__}'
+        return get_slimpajama(tokenizer, config=config)
+    else:
+        raise NotImplementedError(f"Unknown dataset '{dataset_name}'")
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data, sequence_length):
+    def __init__(self, data: list[np.ndarray], sequence_length: int, cutoff: int | None = None):
         super().__init__()
         self.data = data
-        self.sequence_length = sequence_length
+        self.chunk_sizes = np.array(list(map(len, data)))
 
-    def __len__(self):
-        total_length = len(self.data)
         # chunk the data into sequences of length `sequence_length`
         # NOTE: we discard the last remainding sequence if it's not of length `sequence_length`
-        return total_length // self.sequence_length
+        self.examples_per_chunk = self.chunk_sizes // sequence_length
+        self.chunk_start_idx = np.roll(np.cumsum(self.examples_per_chunk), shift=1)
+        self.chunk_start_idx[0] = 0
+
+        self.sequence_length = sequence_length
+        self.cutoff = cutoff
+
+    @property
+    def n_tokens(self) -> int:
+        if self.cutoff is not None:
+            return self.cutoff * self.sequence_length
+        return sum(self.chunk_sizes)
+
+    def _chunk_for(self, idx):
+        first_invalid = np.where(self.chunk_start_idx > idx)[0][0]
+        return first_invalid - 1
+
+    def __len__(self):
+        if self.cutoff is not None:
+            return self.cutoff
+        return self.examples_per_chunk.sum()
 
     def __getitem__(self, idx):
         seq_length = self.sequence_length
+        data_source = self.data[self._chunk_for(idx)]
+
         idx = idx * seq_length
-        x = torch.from_numpy((self.data[idx : idx + seq_length]).astype(np.int64))
+        x = torch.from_numpy((data_source[idx:idx + seq_length]).astype(np.int64))
 
         y = torch.from_numpy(
-            (self.data[idx + 1: idx + 1 + seq_length]).astype(np.int64)
+            (data_source[idx + 1:idx + 1 + seq_length]).astype(np.int64)
         )
         return x, y
 
