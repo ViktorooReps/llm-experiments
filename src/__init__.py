@@ -2,9 +2,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from transformers import AutoConfig, AutoModel, AutoTokenizer
-from .models import REGISTERED_MODELS
+from .models import REGISTERED_MODELS, REGISTERED_LM_MODELS
 
 for model_name, (model_class, tokenizer_class) in REGISTERED_MODELS.items():
+    AutoConfig.register(model_name, model_class.config_class)
+    AutoModel.register(model_class.config_class, model_class)
+    AutoTokenizer.register(model_class.config_class, tokenizer_class)
+
+for model_name, (model_class, tokenizer_class) in REGISTERED_LM_MODELS.items():
     AutoConfig.register(model_name, model_class.config_class)
     AutoModel.register(model_class.config_class, model_class)
     AutoTokenizer.register(model_class.config_class, tokenizer_class)
